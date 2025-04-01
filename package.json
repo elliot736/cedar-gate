@@ -1,0 +1,43 @@
+{
+  "name": "cedar-gate",
+  "version": "0.1.0",
+  "description": "Policy-aware API gateway powered by Cedar",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "bin": {
+    "cedar-gate": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server.js"
+  },
+  "keywords": [
+    "api-gateway",
+    "cedar",
+    "policy",
+    "authorization",
+    "rate-limiting",
+    "multi-tenant"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@cedar-policy/cedar-wasm": "^4.9.1",
+    "pino": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "pino-pretty": "^11.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}
