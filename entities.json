@@ -1,0 +1,73 @@
+[
+  {
+    "uid": { "type": "Gateway::Service", "id": "public-api" },
+    "attrs": { "name": "public-api", "url": "http://localhost:3001" },
+    "parents": []
+  },
+  {
+    "uid": { "type": "Gateway::Service", "id": "admin-service" },
+    "attrs": { "name": "admin-service", "url": "http://localhost:3002" },
+    "parents": []
+  },
+  {
+    "uid": { "type": "Gateway::Endpoint", "id": "GET:/api/users" },
+    "attrs": {
+      "path": "/api/users",
+      "method": "GET",
+      "backend": "http://localhost:3001"
+    },
+    "parents": [{ "type": "Gateway::Service", "id": "public-api" }]
+  },
+  {
+    "uid": { "type": "Gateway::Endpoint", "id": "POST:/api/users" },
+    "attrs": {
+      "path": "/api/users",
+      "method": "POST",
+      "backend": "http://localhost:3001"
+    },
+    "parents": [{ "type": "Gateway::Service", "id": "public-api" }]
+  },
+  {
+    "uid": { "type": "Gateway::Endpoint", "id": "GET:/admin/dashboard" },
+    "attrs": {
+      "path": "/admin/dashboard",
+      "method": "GET",
+      "backend": "http://localhost:3002"
+    },
+    "parents": [{ "type": "Gateway::Service", "id": "admin-service" }]
+  },
+  {
+    "uid": { "type": "Gateway::Endpoint", "id": "rate-tier:standard" },
+    "attrs": {
+      "path": "",
+      "method": "",
+      "backend": "",
+      "strategy": "sliding-window",
+      "capacity": 100,
+      "windowMs": 60000
+    },
+    "parents": []
+  },
+  {
+    "uid": { "type": "Gateway::Endpoint", "id": "rate-tier:premium" },
+    "attrs": {
+      "path": "",
+      "method": "",
+      "backend": "",
+      "strategy": "token-bucket",
+      "capacity": 1000,
+      "refillRate": 20
+    },
+    "parents": []
+  },
+  {
+    "uid": { "type": "Gateway::Tenant", "id": "acme" },
+    "attrs": { "tier": "enterprise", "plan": "enterprise" },
+    "parents": []
+  },
+  {
+    "uid": { "type": "Gateway::Tenant", "id": "startup-co" },
+    "attrs": { "tier": "standard", "plan": "starter" },
+    "parents": []
+  }
+]
