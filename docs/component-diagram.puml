@@ -1,0 +1,155 @@
+@startuml cedar-gate-components
+!theme plain
+skinparam linetype ortho
+skinparam componentStyle rectangle
+
+title Cedar Gate — Component & Request Flow Diagram
+
+' ──────────────────────────────────────────
+'  External actors
+' ──────────────────────────────────────────
+actor "Client" as client
+actor "Admin\nOperator" as admin
+database "Backend\nServices" as backends
+folder "Filesystem" as fs {
+  file "policies/" as policyFiles
+  file "entities.json" as entitiesFile
+}
+
+' ──────────────────────────────────────────
+'  Top-level servers
+' ──────────────────────────────────────────
+package "cedar-gate" {
+
+  component "server.ts\n(HTTP Server)" as server
+  component "gateway.ts\n(createGatewayHandler)" as gateway
+
+  ' ── Pipeline ──
+  package "pipeline" {
+    component "pipeline.ts\n(composePipeline)" as pipeline
+    component "types.ts\n(GatewayRequest / Response)" as pipelineTypes
+  }
+
+  ' ── Policies ──
+  package "policies" {
+    component "policy-store.ts\n(PolicyStore)" as store
+    component "policy-evaluator.ts\n(PolicyEvaluator)" as evaluator
+    component "policy-loader.ts\n(loadPoliciesFromDir)" as loader
+    component "hot-reload.ts\n(HotReloader)" as hotReload
+  }
+
+  ' ── Schema ──
+  package "schema" {
+    component "gateway-schema.ts\n(GATEWAY_SCHEMA)" as schema
+    component "entity-builder.ts\n(buildPrincipal, buildContext)" as entityBuilder
+    component "entity-uid.ts\n(EntityUid)" as entityUid
+  }
+
+  ' ── Authorization ──
+  package "authz" {
+    component "access-evaluator.ts\n(evaluateAccess)" as accessEval
+  }
+
+  ' ── Rate Limiting ──
+  package "ratelimit" {
+    component "policy-rate-limiter.ts\n(PolicyRateLimiter)" as policyRL
+    component "limiter-registry.ts\n(LimiterRegistry)" as registry
+    component "strategies.ts\n(TokenBucket / SlidingWindow)" as strategies
+  }
+
+  ' ── Routing ──
+  package "routing" {
+    component "router.ts\n(resolveRoute)" as router
+    component "proxy.ts\n(proxyRequest)" as proxy
+  }
+
+  ' ── Observability ──
+  package "observability" {
+    component "logger.ts\n(createLogger)" as logger
+    component "metrics.ts\n(MetricsRegistry)" as metrics
+    component "tracing.ts\n(generateRequestId)" as tracing
+  }
+
+  ' ── Admin ──
+  package "admin" {
+    component "admin-router.ts\n(AdminRouter)" as adminRouter
+    component "admin-handlers.ts\n(handleAdminRequest)" as adminHandlers
+  }
+
+  ' ── Config ──
+  component "config.ts\n(GatewayConfig)" as config
+}
+
+' ──────────────────────────────────────────
+'  Module dependencies
+' ──────────────────────────────────────────
+server --> config : reads
+server --> gateway : creates handler
+server --> adminRouter : starts admin
+
+gateway --> pipeline : composes middleware
+gateway --> store : initialises
+gateway --> evaluator : initialises
+gateway --> loader : loads policies
+gateway --> hotReload : starts watcher
+gateway --> config : reads
+
+pipeline --> pipelineTypes : uses
+
+' Policy internals
+loader --> store : populates
+loader ..> fs : reads from
+hotReload --> store : triggers update
+hotReload ..> fs : watches
+evaluator --> store : reads policies
+evaluator --> schema : validates against
+
+' Schema internals
+entityBuilder --> entityUid : creates UIDs
+entityBuilder --> pipelineTypes : reads request
+
+' Authz
+accessEval --> evaluator : calls evaluate
+accessEval --> entityBuilder : builds entities
+accessEval --> schema : uses ACTIONS.access
+
+' Rate limiting
+policyRL --> evaluator : calls evaluate
+policyRL --> registry : looks up limiter
+policyRL --> schema : uses ACTIONS.ratelimit
+registry --> strategies : caches instances
+
+' Routing
+router --> evaluator : calls evaluate
+router --> schema : uses ACTIONS.route
+proxy --> pipelineTypes : returns GatewayResponse
+
+' Admin
+adminRouter --> adminHandlers : dispatches
+adminHandlers --> store : reads policy snapshot
+adminHandlers --> metrics : serialises metrics
+
+' Observability (cross-cutting)
+gateway ..> logger : logs
+gateway ..> tracing : request IDs
+gateway ..> metrics : records
+
+' ──────────────────────────────────────────
+'  Request flow (numbered)
+' ──────────────────────────────────────────
+client -[#blue,bold]-> server : <b>1</b> HTTP request
+server -[#blue,bold]-> gateway : <b>2</b> dispatch
+gateway -[#blue,bold]-> pipeline : <b>3</b> run middleware chain
+pipeline -[#blue,bold]-> entityBuilder : <b>4</b> build Cedar entities
+pipeline -[#blue,bold]-> accessEval : <b>5</b> access control
+pipeline -[#blue,bold]-> policyRL : <b>6</b> rate limit check
+pipeline -[#blue,bold]-> router : <b>7</b> resolve route
+router -[#blue,bold]-> proxy : <b>8</b> forward request
+proxy -[#blue,bold]-> backends : <b>9</b> upstream call
+backends -[#green,bold]-> proxy : <b>10</b> upstream response
+proxy -[#green,bold]-> server : <b>11</b> gateway response
+server -[#green,bold]-> client : <b>12</b> HTTP response
+
+admin -[#orange]-> adminRouter : health / policies / metrics
+
+@enduml
