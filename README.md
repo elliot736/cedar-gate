@@ -62,32 +62,472 @@ docker run -p 8080:8080 -p 8081:8081 \
 
 ## Architecture
 
+### Class Diagram
+
+```plantuml
+@startuml cedar-gate-classes
+!theme plain
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+
+title Cedar Gate — Class Diagram
+
+' ──────────────────────────────────────────
+'  Config
+' ──────────────────────────────────────────
+package "config" {
+  class GatewayConfig {
+    +port: number
+    +adminPort: number
+    +policiesDir: string
+    +entitiesFile: string
+    +hotReload: boolean
+    +logLevel: string
+    +backendTimeout: number
+  }
+}
+
+' ──────────────────────────────────────────
+'  Pipeline
+' ──────────────────────────────────────────
+package "pipeline" {
+  class GatewayRequest {
+    +method: string
+    +path: string
+    +headers: Record<string, string>
+    +sourceIp: string
+    +tenantId: string
+    +principal: string
+  }
+
+  class GatewayResponse {
+    +statusCode: number
+    +headers: Record<string, string>
+  }
+
+  interface GatewayMiddleware {
+    +handle(req: GatewayRequest, next: NextFunction): Promise<GatewayResponse>
+  }
+
+  interface NextFunction {
+    +__call__(req: GatewayRequest): Promise<GatewayResponse>
+  }
+
+  class Pipeline {
+    +{static} composePipeline(middlewares: GatewayMiddleware[]): NextFunction
+  }
+
+  GatewayMiddleware ..> GatewayRequest : receives
+  GatewayMiddleware ..> GatewayResponse : returns
+  GatewayMiddleware ..> NextFunction : delegates to
+  Pipeline ..> GatewayMiddleware : composes
+}
+
+' ──────────────────────────────────────────
+'  Policies
+' ──────────────────────────────────────────
+package "policies" {
+  class PolicyStore {
+    -policies: string
+    -listeners: Function[]
+    +getSnapshot(): string
+    +update(policies: string): void
+    +onChange(listener: Function): void
+  }
+
+  class PolicyEvaluator {
+    -cedarEngine: CedarWasm
+    +evaluate(request, entities, schema): EvaluationResult
+  }
+
+  class EvaluationResult {
+    +decision: "Allow" | "Deny"
+    +reasons: string[]
+  }
+
+  class LoadResult {
+    +policies: string
+    +entities: object
+  }
+
+  class PolicyLoader {
+    +{static} loadPoliciesFromDir(dir: string): Promise<LoadResult>
+    +{static} loadEntitiesFromFile(file: string): Promise<object>
+  }
+
+  class HotReloader {
+    -watcher: FSWatcher
+    -debounceMs: number
+    +start(dir: string, callback: Function): void
+    +stop(): void
+  }
+
+  PolicyEvaluator ..> EvaluationResult : produces
+  PolicyEvaluator ..> PolicyStore : reads policies from
+  HotReloader ..> PolicyStore : triggers update on
+  PolicyLoader ..> LoadResult : returns
+  PolicyLoader ..> PolicyStore : populates
+}
+
+' ──────────────────────────────────────────
+'  Authorization
+' ──────────────────────────────────────────
+package "authz" {
+  class AccessEvaluator {
+    +{static} evaluateAccess(req, evaluator, entities): AccessResult
+  }
+
+  class AccessResult {
+    +allowed: boolean
+    +reasons: string[]
+  }
+
+  AccessEvaluator ..> AccessResult : returns
+  AccessEvaluator ..> PolicyEvaluator : delegates to
+}
+
+' ──────────────────────────────────────────
+'  Routing
+' ──────────────────────────────────────────
+package "routing" {
+  class Router {
+    +{static} resolveRoute(req, evaluator, entities): ResolvedRoute
+  }
+
+  class BackendTarget {
+    +url: string
+    +timeout: number
+  }
+
+  class ResolvedRoute {
+    +target: BackendTarget
+  }
+
+  class Proxy {
+    +{static} proxyRequest(req, target: BackendTarget): Promise<GatewayResponse>
+  }
+
+  Router ..> ResolvedRoute : returns
+  ResolvedRoute *-- BackendTarget
+  Router ..> PolicyEvaluator : delegates to
+  Proxy ..> BackendTarget : connects to
+  Proxy ..> GatewayResponse : returns
+}
+
+' ──────────────────────────────────────────
+'  Rate Limiting
+' ──────────────────────────────────────────
+package "ratelimit" {
+  interface RateLimiter {
+    +tryConsume(key: string): RateLimitResult
+  }
+
+  class RateLimitResult {
+    +allowed: boolean
+    +remaining: number
+    +retryAfter?: number
+  }
+
+  class TokenBucketLimiter implements RateLimiter {
+    -capacity: number
+    -refillRate: number
+    +tryConsume(key: string): RateLimitResult
+  }
+
+  class SlidingWindowLimiter implements RateLimiter {
+    -windowMs: number
+    -maxRequests: number
+    +tryConsume(key: string): RateLimitResult
+  }
+
+  class LimiterRegistry {
+    -cache: Map<string, RateLimiter>
+    +get(key: string): RateLimiter
+    +register(key: string, limiter: RateLimiter): void
+  }
+
+  class PolicyRateLimiter {
+    -registry: LimiterRegistry
+    -evaluator: PolicyEvaluator
+    +check(req: GatewayRequest): RateLimitDecision
+  }
+
+  class RateLimitDecision {
+    +allowed: boolean
+    +limiterKey: string
+    +result: RateLimitResult
+  }
+
+  RateLimiter ..> RateLimitResult : returns
+  LimiterRegistry o-- RateLimiter : caches
+  PolicyRateLimiter --> LimiterRegistry : uses
+  PolicyRateLimiter --> PolicyEvaluator : delegates to
+  PolicyRateLimiter ..> RateLimitDecision : returns
+  RateLimitDecision *-- RateLimitResult
+}
+
+' ──────────────────────────────────────────
+'  Schema
+' ──────────────────────────────────────────
+package "schema" {
+  class GatewaySchema {
+    +{static} GATEWAY_SCHEMA: CedarSchema
+    +{static} ACTIONS: Actions
+    +{static} ENTITY_TYPES: EntityTypes
+  }
+
+  class Actions <<enumeration>> {
+    access
+    route
+    ratelimit
+  }
+
+  class EntityTypes <<enumeration>> {
+    Principal
+    Endpoint
+    Tenant
+  }
+
+  class EntityUid {
+    +type: string
+    +id: string
+    +{static} parse(s: string): EntityUid
+    +toString(): string
+  }
+
+  class EntityBuilder {
+    +{static} buildPrincipal(req: GatewayRequest): Entity
+    +{static} buildEndpointUID(method, path): EntityUid
+    +{static} buildContext(req: GatewayRequest): Record
+  }
+
+  GatewaySchema *-- Actions
+  GatewaySchema *-- EntityTypes
+  EntityBuilder ..> EntityUid : creates
+  EntityBuilder ..> GatewayRequest : reads
+}
+
+' ──────────────────────────────────────────
+'  Observability
+' ──────────────────────────────────────────
+package "observability" {
+  class Logger {
+    +{static} createLogger(level: string): PinoLogger
+  }
+
+  class MetricsRegistry {
+    -counters: Map
+    -gauges: Map
+    -histograms: Map
+    +counter(name: string): Counter
+    +gauge(name: string): Gauge
+    +histogram(name: string): Histogram
+    +serialize(): string
+  }
+
+  class Tracing {
+    +{static} generateRequestId(): string
+    +{static} durationSeconds(start: bigint): number
+  }
+}
+
+' ──────────────────────────────────────────
+'  Admin
+' ──────────────────────────────────────────
+package "admin" {
+  class AdminRouter {
+    +listen(port: number): void
+  }
+
+  class AdminHandlers {
+    +{static} handleAdminRequest(req): Response
+  }
+
+  AdminRouter ..> AdminHandlers : dispatches to
+  AdminHandlers ..> PolicyStore : reads
+  AdminHandlers ..> MetricsRegistry : reads
+}
+
+' ──────────────────────────────────────────
+'  Gateway (orchestrator)
+' ──────────────────────────────────────────
+package "gateway" {
+  class GatewayHandler {
+    +{static} createGatewayHandler(config: GatewayConfig): RequestHandler
+  }
+
+  class Server {
+    +start(config: GatewayConfig): void
+  }
+
+  Server --> GatewayHandler : creates handler via
+  GatewayHandler --> GatewayConfig : reads
+  GatewayHandler --> Pipeline : builds
+  GatewayHandler --> PolicyStore : initialises
+  GatewayHandler --> PolicyEvaluator : initialises
+}
+
+@enduml
 ```
-                            ┌─────────────────────────┐
-                            │      Cedar Policies      │
-                            │  (access, route, rate)   │
-                            └────────────┬────────────┘
-                                         │ hot-reload
-                                         ▼
-  HTTP Request ──► ┌──────────────────────────────────────────┐
-                   │              cedar-gate                   │
-                   │                                          │
-                   │  ┌─────────┐  ┌──────────┐  ┌────────┐  │     ┌──────────┐
-                   │  │ Access  │─►│   Rate   │─►│ Route  │──│────►│ Backend  │
-                   │  │ Control │  │ Limiting │  │Resolve │  │     │ Service  │
-                   │  └─────────┘  └──────────┘  └────────┘  │     └──────────┘
-                   │       │            │             │        │
-                   │       ▼            ▼             ▼        │
-                   │           Cedar Evaluator                 │
-                   │      (@cedar-policy/cedar-wasm)           │
-                   └──────────────────────────────────────────┘
-                                         │
-                              ┌──────────┴──────────┐
-                              │  Observability       │
-                              │  • Structured logs   │
-                              │  • Prometheus metrics│
-                              │  • Request tracing   │
-                              └─────────────────────┘
+
+### Component Diagram
+
+```plantuml
+@startuml cedar-gate-components
+!theme plain
+skinparam linetype ortho
+skinparam componentStyle rectangle
+
+title Cedar Gate — Component & Request Flow Diagram
+
+' ──────────────────────────────────────────
+'  External actors
+' ──────────────────────────────────────────
+actor "Client" as client
+actor "Admin\nOperator" as admin
+database "Backend\nServices" as backends
+folder "Filesystem" as fs {
+  file "policies/" as policyFiles
+  file "entities.json" as entitiesFile
+}
+
+' ──────────────────────────────────────────
+'  Top-level servers
+' ──────────────────────────────────────────
+package "cedar-gate" {
+
+  component "server.ts\n(HTTP Server)" as server
+  component "gateway.ts\n(createGatewayHandler)" as gateway
+
+  ' ── Pipeline ──
+  package "pipeline" {
+    component "pipeline.ts\n(composePipeline)" as pipeline
+    component "types.ts\n(GatewayRequest / Response)" as pipelineTypes
+  }
+
+  ' ── Policies ──
+  package "policies" {
+    component "policy-store.ts\n(PolicyStore)" as store
+    component "policy-evaluator.ts\n(PolicyEvaluator)" as evaluator
+    component "policy-loader.ts\n(loadPoliciesFromDir)" as loader
+    component "hot-reload.ts\n(HotReloader)" as hotReload
+  }
+
+  ' ── Schema ──
+  package "schema" {
+    component "gateway-schema.ts\n(GATEWAY_SCHEMA)" as schema
+    component "entity-builder.ts\n(buildPrincipal, buildContext)" as entityBuilder
+    component "entity-uid.ts\n(EntityUid)" as entityUid
+  }
+
+  ' ── Authorization ──
+  package "authz" {
+    component "access-evaluator.ts\n(evaluateAccess)" as accessEval
+  }
+
+  ' ── Rate Limiting ──
+  package "ratelimit" {
+    component "policy-rate-limiter.ts\n(PolicyRateLimiter)" as policyRL
+    component "limiter-registry.ts\n(LimiterRegistry)" as registry
+    component "strategies.ts\n(TokenBucket / SlidingWindow)" as strategies
+  }
+
+  ' ── Routing ──
+  package "routing" {
+    component "router.ts\n(resolveRoute)" as router
+    component "proxy.ts\n(proxyRequest)" as proxy
+  }
+
+  ' ── Observability ──
+  package "observability" {
+    component "logger.ts\n(createLogger)" as logger
+    component "metrics.ts\n(MetricsRegistry)" as metrics
+    component "tracing.ts\n(generateRequestId)" as tracing
+  }
+
+  ' ── Admin ──
+  package "admin" {
+    component "admin-router.ts\n(AdminRouter)" as adminRouter
+    component "admin-handlers.ts\n(handleAdminRequest)" as adminHandlers
+  }
+
+  ' ── Config ──
+  component "config.ts\n(GatewayConfig)" as config
+}
+
+' ──────────────────────────────────────────
+'  Module dependencies
+' ──────────────────────────────────────────
+server --> config : reads
+server --> gateway : creates handler
+server --> adminRouter : starts admin
+
+gateway --> pipeline : composes middleware
+gateway --> store : initialises
+gateway --> evaluator : initialises
+gateway --> loader : loads policies
+gateway --> hotReload : starts watcher
+gateway --> config : reads
+
+pipeline --> pipelineTypes : uses
+
+' Policy internals
+loader --> store : populates
+loader ..> fs : reads from
+hotReload --> store : triggers update
+hotReload ..> fs : watches
+evaluator --> store : reads policies
+evaluator --> schema : validates against
+
+' Schema internals
+entityBuilder --> entityUid : creates UIDs
+entityBuilder --> pipelineTypes : reads request
+
+' Authz
+accessEval --> evaluator : calls evaluate
+accessEval --> entityBuilder : builds entities
+accessEval --> schema : uses ACTIONS.access
+
+' Rate limiting
+policyRL --> evaluator : calls evaluate
+policyRL --> registry : looks up limiter
+policyRL --> schema : uses ACTIONS.ratelimit
+registry --> strategies : caches instances
+
+' Routing
+router --> evaluator : calls evaluate
+router --> schema : uses ACTIONS.route
+proxy --> pipelineTypes : returns GatewayResponse
+
+' Admin
+adminRouter --> adminHandlers : dispatches
+adminHandlers --> store : reads policy snapshot
+adminHandlers --> metrics : serialises metrics
+
+' Observability (cross-cutting)
+gateway ..> logger : logs
+gateway ..> tracing : request IDs
+gateway ..> metrics : records
+
+' ──────────────────────────────────────────
+'  Request flow (numbered)
+' ──────────────────────────────────────────
+client -[#blue,bold]-> server : <b>1</b> HTTP request
+server -[#blue,bold]-> gateway : <b>2</b> dispatch
+gateway -[#blue,bold]-> pipeline : <b>3</b> run middleware chain
+pipeline -[#blue,bold]-> entityBuilder : <b>4</b> build Cedar entities
+pipeline -[#blue,bold]-> accessEval : <b>5</b> access control
+pipeline -[#blue,bold]-> policyRL : <b>6</b> rate limit check
+pipeline -[#blue,bold]-> router : <b>7</b> resolve route
+router -[#blue,bold]-> proxy : <b>8</b> forward request
+proxy -[#blue,bold]-> backends : <b>9</b> upstream call
+backends -[#green,bold]-> proxy : <b>10</b> upstream response
+proxy -[#green,bold]-> server : <b>11</b> gateway response
+server -[#green,bold]-> client : <b>12</b> HTTP response
+
+admin -[#orange]-> adminRouter : health / policies / metrics
+
+@enduml
 ```
 
 ### Request lifecycle
