@@ -18,6 +18,7 @@
 ## Table of Contents
 
 - [Why Cedar for a Gateway?](#why-cedar-for-a-gateway)
+- [Features](#features)
 - [Quick Start](#quick-start)
   - [Docker](#docker)
 - [Cedar Policy Model](#cedar-policy-model)
@@ -52,7 +53,9 @@
 
 ## Why Cedar for a Gateway?
 
-Traditional API gateways use YAML/JSON for routing and separate systems for auth and rate limiting. cedar-gate unifies all three concerns under one policy language.
+Traditional API gateways scatter their logic across multiple systems. Routing lives in YAML route tables. Auth is a separate middleware chain (or a sidecar like OPA). Rate limiting is yet another bolt-on config layer. That is three languages, three evaluation models, and three places an auditor has to look to answer "who can reach what, and how fast?"
+
+cedar-gate collapses all three into Cedar policies. One language, one evaluation engine, one audit trail.
 
 | Concern            | Traditional gateway                 | cedar-gate                                                                                                                        |
 | ------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -60,7 +63,20 @@ Traditional API gateways use YAML/JSON for routing and separate systems for auth
 | **Access control** | Middleware chain, OPA, or hardcoded | `forbid(principal, action == Action::"access", resource) when { context.tenantStatus == "suspended" }`                            |
 | **Rate limiting**  | Config per endpoint                 | `permit(principal in Gateway::Tenant::"acme", action == Action::"ratelimit", resource == Gateway::Endpoint::"rate-tier:premium")` |
 
-One language, one evaluation engine, one place to audit. Cedar's `forbid` always overrides `permit`, so safety constraints can never be accidentally bypassed by a routing rule.
+Cedar has formal deny-overrides semantics: a `forbid` always beats a `permit`, no matter the evaluation order. That means a safety constraint (block a suspended tenant, reject an internal-only path) can never be accidentally bypassed by a routing rule or a permissive rate-limit tier. In a traditional gateway you would need integration tests to prove that guarantee. With Cedar it is a property of the language itself.
+
+---
+
+## Features
+
+- **Three concerns, one language.** Routing, access control, and rate limiting are all Cedar policies. No YAML, no JSON config.
+- **Hot-reloadable policies.** Edit a `.cedar` file and the gateway picks up changes within 300ms. No restart required.
+- **Multi-tenant by default.** Cedar entity hierarchy (User -> Tenant) gives you tenant-scoped policies without duplicating rules.
+- **Two rate limiting strategies.** Token bucket for burst-tolerant APIs, sliding window for strict quotas. Selected per-tier via policy.
+- **Prometheus metrics.** Request counts, latency histograms, policy evaluation times, rate limit hits. Custom registry, zero dependencies.
+- **Streaming reverse proxy.** `node:http` based. Hop-by-hop header filtering, request ID forwarding, sub-millisecond overhead.
+- **Admin API.** Add policies at runtime, trigger reloads, inspect entity store, scrape metrics.
+- **2 runtime dependencies.** cedar-wasm for policy evaluation, pino for logging. Everything else is Node.js built-ins.
 
 ---
 
