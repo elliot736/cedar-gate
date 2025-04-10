@@ -1,0 +1,95 @@
+@startuml
+!theme plain
+title Cedar-Gate AWS Deployment
+
+skinparam node {
+  BackgroundColor #F8F8F8
+  BorderColor #333333
+}
+skinparam component {
+  BackgroundColor #DDEEFF
+  BorderColor #336699
+}
+skinparam database {
+  BackgroundColor #FFEEDD
+  BorderColor #CC8833
+}
+skinparam artifact {
+  BackgroundColor #E8F5E9
+  BorderColor #4CAF50
+}
+
+cloud "Internet" as internet {
+}
+
+cloud "AWS Cloud" as aws {
+
+  node "VPC" as vpc {
+
+    node "Public Subnets (AZ-a, AZ-b)" as pubsub {
+      component "Application\nLoad Balancer" as alb {
+      }
+      note right of alb
+        Port 80/443
+        TG :8080 (gateway)
+        TG :8081 (admin/metrics)
+      end note
+
+      component "NAT Gateway" as nat
+    }
+
+    node "Private Subnets (AZ-a, AZ-b)" as privsub {
+      node "ECS Fargate Cluster" as ecs {
+        node "Task 1" as task1 {
+          artifact "cedar-gate\ncontainer" as c1 {
+          }
+        }
+        node "Task 2" as task2 {
+          artifact "cedar-gate\ncontainer" as c2 {
+          }
+        }
+        node "Task N ..." as taskn {
+          artifact "cedar-gate\ncontainer" as cn {
+          }
+        }
+      }
+    }
+  }
+
+  database "S3 Bucket\n(Cedar Policies)" as s3 {
+    artifact "*.cedar files" as cedar
+    artifact "entities.json" as entities
+  }
+
+  node "ECR" as ecr {
+    artifact "cedar-gate\nDocker image" as image
+  }
+
+  node "CloudWatch" as cw {
+    component "Logs" as logs
+    component "Alarms\n(CPU / Request Count)" as alarms
+  }
+
+  component "SNS\n(Alert Notifications)" as sns
+
+  component "Auto Scaling" as autoscale
+}
+
+internet -down-> alb : HTTPS
+
+alb -down-> c1 : :8080 / :8081
+alb -down-> c2 : :8080 / :8081
+alb -down-> cn : :8080 / :8081
+
+privsub -up-> nat : outbound
+nat -up-> internet
+
+c1 -right-> s3 : download\nat startup
+ecr -down-> ecs : pull image
+
+ecs -right-> cw : metrics\n& logs
+alarms -right-> sns : alerts
+autoscale -up-> ecs : scale tasks
+cw -down-> autoscale : trigger
+
+@enduml

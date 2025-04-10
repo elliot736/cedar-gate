@@ -11,7 +11,8 @@
 <a href="#admin-api">Admin API</a> &middot;
 <a href="#observability">Observability</a> &middot;
 <a href="#rate-limiting-strategies">Rate Limiting</a> &middot;
-<a href="#architecture">Architecture</a>
+<a href="#architecture">Architecture</a> &middot;
+<a href="#aws-deployment">Deploy</a>
 </p>
 
 ## Table of Contents
@@ -41,6 +42,8 @@
   - [Sequence Diagram](#sequence-diagram)
   - [Request Lifecycle](#request-lifecycle)
 - [Project Structure](#project-structure)
+- [AWS Deployment](#aws-deployment)
+  - [Terraform Variables](#terraform-variables)
 - [Dependencies](#dependencies)
 - [Development](#development)
 - [License](#license)
@@ -434,6 +437,83 @@ cedar-gate/
   policies/                     # Example Cedar policies
   entities.json                 # Example entity store
 ```
+
+---
+
+## AWS Deployment
+
+The same Docker image that runs locally deploys to AWS with no code changes. Terraform provisions everything.
+
+![AWS Deployment](docs/deployment-diagram.png)
+
+| Layer | Resource | Purpose |
+|-------|----------|---------|
+| Load Balancer | ALB | Routes traffic (port 80) and admin (port 8081) to ECS targets |
+| Compute | ECS Fargate | Runs cedar-gate containers in private subnets |
+| Policies | S3 | Stores `.cedar` files and `entities.json`, downloaded at startup |
+| Images | ECR | Private Docker image registry with scan-on-push |
+| Monitoring | CloudWatch + SNS | CPU/memory alarms, 5xx alerts, request dashboards |
+| Scaling | Auto Scaling | CPU-based and request-count scaling |
+
+<details>
+<summary><strong>Terraform file breakdown</strong></summary>
+
+```
+infra/terraform/
+├── main.tf              # Provider, backend (S3), default tags
+├── variables.tf         # Region, instance sizes, scaling params
+├── vpc.tf               # VPC, 2 public + 2 private subnets, NAT gateway
+├── security.tf          # Security groups (ALB, ECS)
+├── ecr.tf               # ECR repo with lifecycle policies
+├── ecs.tf               # Fargate cluster, task definition, service
+├── alb.tf               # ALB with traffic + admin target groups
+├── s3.tf                # Policy bucket with versioning and encryption
+├── monitoring.tf        # CloudWatch alarms, dashboard, SNS alerts
+├── autoscaling.tf       # CPU and request-count auto-scaling
+├── outputs.tf           # ALB URLs, ECR URL, bucket name
+└── bootstrap/main.tf    # S3 state bucket + DynamoDB lock (run once)
+```
+
+</details>
+
+Deploy:
+
+```bash
+# 1. Bootstrap state backend (once)
+cd infra/terraform/bootstrap
+terraform init && terraform apply
+
+# 2. Deploy infrastructure
+cd infra/terraform
+cp terraform.tfvars.example terraform.tfvars
+terraform init && terraform apply
+
+# 3. Build and push image
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin <account-id>.dkr.ecr.us-east-1.amazonaws.com
+
+docker build -t <ecr-url>/cedar-gate-prod:latest .
+docker push <ecr-url>/cedar-gate-prod:latest
+
+# 4. Upload policies to S3
+aws s3 sync ./policies s3://cedar-gate-prod-policies/
+aws s3 cp ./entities.json s3://cedar-gate-prod-policies/
+```
+
+### Terraform Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `aws_region` | `us-east-1` | AWS region |
+| `environment` | `prod` | Environment name |
+| `project` | `cedar-gate` | Project name prefix |
+| `gateway_cpu` | `512` | Task CPU units |
+| `gateway_memory` | `1024` | Task memory (MiB) |
+| `gateway_desired_count` | `2` | Number of tasks |
+| `gateway_max_count` | `6` | Maximum tasks for auto-scaling |
+| `admin_cidr_blocks` | `[]` | CIDRs allowed to access admin port |
+| `enable_deletion_protection` | `true` | Prevent accidental ALB/bucket deletion |
+| `alert_email` | `""` | Email for CloudWatch alarm notifications |
 
 ---
 

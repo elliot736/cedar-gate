@@ -1,0 +1,18 @@
+aws_region     = "us-east-1"
+environment    = "prod"
+project        = "cedar-gate"
+
+# Compute sizing
+gateway_cpu           = 512
+gateway_memory        = 1024
+gateway_desired_count = 2
+gateway_max_count     = 10
+
+# Restrict admin port access (default: open)
+# admin_cidr_blocks = ["10.0.0.0/8"]
+
+# Alerts
+# alert_email = "ops@example.com"
+
+enable_deletion_protection = true
+log_retention_days         = 30
