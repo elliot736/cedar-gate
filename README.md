@@ -1,17 +1,55 @@
-# cedar-gate
+<p align="center">
+<h1 align="center">cedar-gate</h1>
+<p align="center">A lightweight API gateway where routing, rate limiting, and access control are all Cedar policies.<br/>No YAML. No JSON config. Just Cedar.</p>
+</p>
 
-[![CI](https://github.com/elliot736/cedar-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/elliot736/cedar-gate/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue.svg)](https://www.typescriptlang.org)
+<p align="center">
+<a href="#quick-start">Quick Start</a> &middot;
+<a href="#cedar-policy-model">Policy Model</a> &middot;
+<a href="#configuration">Configuration</a> &middot;
+<a href="#hot-reload">Hot Reload</a> &middot;
+<a href="#admin-api">Admin API</a> &middot;
+<a href="#observability">Observability</a> &middot;
+<a href="#rate-limiting-strategies">Rate Limiting</a> &middot;
+<a href="#architecture">Architecture</a>
+</p>
 
-A lightweight API gateway where **routing, rate limiting, and access control are all expressed as [Cedar](https://www.cedarpolicy.com) policies**. No YAML. No JSON config. Just Cedar.
+## Table of Contents
 
-Cedar policies give you a formally-defined, auditable, hot-reloadable configuration language swap routing rules without restarting the gateway, enforce per-tenant rate limits through policy hierarchy, and block requests with a single `forbid` statement.
+- [Why Cedar for a Gateway?](#why-cedar-for-a-gateway)
+- [Quick Start](#quick-start)
+  - [Docker](#docker)
+- [Cedar Policy Model](#cedar-policy-model)
+  - [Entity Types](#entity-types)
+  - [Writing Policies](#writing-policies)
+- [Configuration](#configuration)
+  - [Entity Store Format](#entity-store-format)
+- [Hot Reload](#hot-reload)
+  - [Atomic Swap (No Locks)](#atomic-swap-no-locks)
+- [Admin API](#admin-api)
+  - [Add a Policy at Runtime](#add-a-policy-at-runtime)
+- [Observability](#observability)
+  - [Metrics](#metrics)
+  - [Structured Logging](#structured-logging)
+  - [Request Tracing](#request-tracing)
+- [Rate Limiting Strategies](#rate-limiting-strategies)
+  - [Token Bucket](#token-bucket)
+  - [Sliding Window](#sliding-window)
+- [Multi-Tenant Design](#multi-tenant-design)
+- [Architecture](#architecture)
+  - [Class Diagram](#class-diagram)
+  - [Sequence Diagram](#sequence-diagram)
+  - [Request Lifecycle](#request-lifecycle)
+- [Project Structure](#project-structure)
+- [Dependencies](#dependencies)
+- [Development](#development)
+- [License](#license)
 
-## Why Cedar for a gateway?
+---
 
-Traditional API gateways use YAML/JSON for routing and separate systems for auth and rate limiting. cedar-gate unifies all three concerns under one policy language:
+## Why Cedar for a Gateway?
+
+Traditional API gateways use YAML/JSON for routing and separate systems for auth and rate limiting. cedar-gate unifies all three concerns under one policy language.
 
 | Concern            | Traditional gateway                 | cedar-gate                                                                                                                        |
 | ------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -19,9 +57,11 @@ Traditional API gateways use YAML/JSON for routing and separate systems for auth
 | **Access control** | Middleware chain, OPA, or hardcoded | `forbid(principal, action == Action::"access", resource) when { context.tenantStatus == "suspended" }`                            |
 | **Rate limiting**  | Config per endpoint                 | `permit(principal in Gateway::Tenant::"acme", action == Action::"ratelimit", resource == Gateway::Endpoint::"rate-tier:premium")` |
 
-This means one language, one evaluation engine, one place to audit. Cedar's `forbid` always overrides `permit`, so safety constraints can't be accidentally bypassed by a routing rule.
+One language, one evaluation engine, one place to audit. Cedar's `forbid` always overrides `permit`, so safety constraints can never be accidentally bypassed by a routing rule.
 
-## Quick start
+---
+
+## Quick Start
 
 ```bash
 # Clone and install
@@ -60,30 +100,11 @@ docker run -p 8080:8080 -p 8081:8081 \
   cedar-gate
 ```
 
-## Architecture
+---
 
-### Class Diagram
+## Cedar Policy Model
 
-![Class Diagram](docs/class-diagram.png)
-
-### Sequence Diagram
-
-![Sequence Diagram](docs/sequence-diagram.png)
-
-### Request lifecycle
-
-Every request goes through three Cedar policy evaluations:
-
-1. **Access control** `Action::"access"` Is this principal allowed to reach this endpoint? → `403 Forbidden` if denied
-2. **Rate limiting** `Action::"ratelimit"` Which rate limit tier applies? → `429 Too Many Requests` if exceeded
-3. **Routing** `Action::"route"` Which backend serves this endpoint? → `404 Not Found` if no route matches
-4. **Proxy** Forward to the resolved backend via streaming `node:http` reverse proxy
-
-Each evaluation uses the same Cedar engine, same entity store, same policy set. The only difference is the `action` in the Cedar request.
-
-## Cedar policy model
-
-### Entity types
+### Entity Types
 
 ```
 Gateway::User       { role?: String }              → parent: Gateway::Tenant
@@ -94,9 +115,9 @@ Gateway::Endpoint   { path: String, method: String, backend: String } → parent
 Gateway::Service    { name: String, url: String }
 ```
 
-The `→ parent` arrows define Cedar's entity hierarchy. A `User` that belongs to `Tenant::"acme"` inherits all policies that apply to `Tenant::"acme"` this is how tenant-scoped policies work without duplicating rules.
+The `→ parent` arrows define Cedar's entity hierarchy. A `User` that belongs to `Tenant::"acme"` inherits all policies that apply to `Tenant::"acme"`. This is how tenant-scoped policies work without duplicating rules.
 
-### Writing policies
+### Writing Policies
 
 **Route an endpoint to a backend:**
 
@@ -108,7 +129,7 @@ permit(
 );
 ```
 
-The backend URL comes from the `Endpoint` entity's `backend` attribute in the entity store not the policy itself. Policies decide _if_ a route is allowed; entities define _where_ it goes.
+The backend URL comes from the `Endpoint` entity's `backend` attribute in the entity store, not the policy itself. Policies decide _if_ a route is allowed; entities define _where_ it goes.
 
 **Restrict access by role:**
 
@@ -161,6 +182,8 @@ Rate limit tiers are defined as entities with configuration attributes:
 
 The gateway evaluates which tier is permitted for the principal, reads the config from the entity, and applies the appropriate limiter (token bucket or sliding window).
 
+---
+
 ## Configuration
 
 cedar-gate is configured via environment variables:
@@ -174,7 +197,7 @@ cedar-gate is configured via environment variables:
 | `HOT_RELOAD`    | `true`       | Watch policies dir for changes      |
 | `LOG_LEVEL`     | `info`       | `debug`, `info`, `warn`, or `error` |
 
-### Entity store format
+### Entity Store Format
 
 The entities file is a JSON array of Cedar entities:
 
@@ -202,15 +225,17 @@ The entities file is a JSON array of Cedar entities:
 ]
 ```
 
-## Hot reload
+---
 
-Edit any `.cedar` file in the policies directory and cedar-gate picks up the change within 300ms no restart needed.
+## Hot Reload
+
+Edit any `.cedar` file in the policies directory and cedar-gate picks up the change within 300ms. No restart needed.
 
 How it works:
 
 - A `node:fs` watcher monitors the policies directory
 - Changes are debounced (300ms) to handle multi-file saves
-- On change: re-parse all `.cedar` files → validate → atomically swap the `Authorizer` reference
+- On change: re-parse all `.cedar` files, validate, then atomically swap the `Authorizer` reference
 - In-flight requests finish with the old policies; new requests use the new ones
 - On parse error: log the error, **keep the old policies** (never serve with broken config)
 
@@ -220,9 +245,11 @@ You can also trigger a reload via the admin API:
 curl -X POST http://localhost:8081/admin/policies/reload
 ```
 
-### Atomic swap (no locks)
+### Atomic Swap (No Locks)
 
-The hot-reload uses a single-reference swap: the `PolicyStore` holds a reference to an `Authorizer` instance. On reload, a new `Authorizer` is constructed and the reference is replaced in a single assignment. JavaScript's single-threaded event loop guarantees this is atomic no mutexes, no read-write locks. This is the same pattern used by Envoy and HAProxy for configuration updates.
+The hot-reload uses a single-reference swap: the `PolicyStore` holds a reference to an `Authorizer` instance. On reload, a new `Authorizer` is constructed and the reference is replaced in a single assignment. JavaScript's single-threaded event loop guarantees this is atomic, with no mutexes or read-write locks. This is the same pattern used by Envoy and HAProxy for configuration updates.
+
+---
 
 ## Admin API
 
@@ -238,13 +265,15 @@ All admin endpoints are served on the admin port (default: `8081`).
 | `GET`  | `/admin/entities`        | View entity store                      |
 | `PUT`  | `/admin/entities`        | Replace entity store                   |
 
-### Add a policy at runtime
+### Add a Policy at Runtime
 
 ```bash
 curl -X POST http://localhost:8081/admin/policies \
   -H "Content-Type: application/json" \
   -d '{"policyText": "forbid(principal, action == Action::\"access\", resource) when { context.sourceIp like \"10.0.0.*\" };"}'
 ```
+
+---
 
 ## Observability
 
@@ -263,9 +292,9 @@ gateway_entity_count 8
 gateway_policy_reload_total 2
 ```
 
-The metrics registry is a custom Prometheus text format serializer no `prom-client` dependency. Supports counters, gauges, and histograms with configurable buckets.
+The metrics registry is a custom Prometheus text format serializer with no `prom-client` dependency. Supports counters, gauges, and histograms with configurable buckets.
 
-### Structured logging
+### Structured Logging
 
 JSON-structured logs via [pino](https://github.com/pinojs/pino):
 
@@ -284,18 +313,20 @@ JSON-structured logs via [pino](https://github.com/pinojs/pino):
 
 Every log line includes the `requestId` for correlation. The request ID is forwarded to backends as `X-Request-Id`.
 
-### Request tracing
+### Request Tracing
 
 - Generates a unique ID per request (or accepts the client's `X-Request-Id` header)
 - Forwards the ID to backends as `X-Request-Id`
 - Includes the ID in all response headers and log lines
 - Sub-millisecond duration tracking via `process.hrtime.bigint()`
 
-## Rate limiting strategies
+---
 
-cedar-gate includes two rate limiting strategies, selected per-tier via entity attributes:
+## Rate Limiting Strategies
 
-### Token bucket
+cedar-gate includes two rate limiting strategies, selected per-tier via entity attributes.
+
+### Token Bucket
 
 Allows controlled bursts up to capacity, then sustains a steady rate. Good for APIs that need to handle occasional spikes.
 
@@ -305,7 +336,7 @@ Allows controlled bursts up to capacity, then sustains a steady rate. Good for A
 
 This allows a burst of 1000 requests, then 20 requests/second sustained.
 
-### Sliding window
+### Sliding Window
 
 Smooth rate limiting without bursts. Uses a weighted two-window approximation for memory efficiency.
 
@@ -317,12 +348,14 @@ This allows 100 requests per rolling 60-second window.
 
 Both strategies are per-key (composite of tenant + endpoint) and self-cleaning (stale entries are garbage collected).
 
-## Multi-tenant design
+---
 
-Multi-tenancy is first-class in cedar-gate, not bolted on:
+## Multi-Tenant Design
+
+Multi-tenancy is first-class in cedar-gate, not bolted on.
 
 - **Tenant resolution**: `X-Tenant-Id` header on incoming requests
-- **Policy hierarchy**: `User → Tenant` in Cedar's entity hierarchy policies on a `Tenant` automatically apply to all its `User`s
+- **Policy hierarchy**: `User` belongs to `Tenant` in Cedar's entity hierarchy, so policies on a `Tenant` automatically apply to all its `User`s
 - **Rate limit isolation**: Each tenant gets its own rate limit counters, even when sharing a tier
 - **Per-tenant routing**: Route different tenants to different backends via Cedar policies
 - **Tenant blocking**: A single `forbid` policy suspends an entire tenant
@@ -336,7 +369,32 @@ permit(
 );
 ```
 
-## Project structure
+---
+
+## Architecture
+
+### Class Diagram
+
+![Class Diagram](docs/class-diagram.png)
+
+### Sequence Diagram
+
+![Sequence Diagram](docs/sequence-diagram.png)
+
+### Request Lifecycle
+
+Every request goes through three Cedar policy evaluations:
+
+1. **Access control** `Action::"access"` . Is this principal allowed to reach this endpoint? Returns `403 Forbidden` if denied.
+2. **Rate limiting** `Action::"ratelimit"` . Which rate limit tier applies? Returns `429 Too Many Requests` if exceeded.
+3. **Routing** `Action::"route"` . Which backend serves this endpoint? Returns `404 Not Found` if no route matches.
+4. **Proxy** . Forward to the resolved backend via streaming `node:http` reverse proxy.
+
+Each evaluation uses the same Cedar engine, same entity store, same policy set. The only difference is the `action` in the Cedar request.
+
+---
+
+## Project Structure
 
 ```
 cedar-gate/
@@ -377,14 +435,18 @@ cedar-gate/
   entities.json                 # Example entity store
 ```
 
+---
+
 ## Dependencies
 
 cedar-gate has exactly **2 runtime dependencies**:
 
-- [`@cedar-policy/cedar-wasm`](https://github.com/cedar-policy/cedar) AWS's official Cedar policy engine compiled to WebAssembly
-- [`pino`](https://github.com/pinojs/pino) Structured logging
+- [`@cedar-policy/cedar-wasm`](https://github.com/cedar-policy/cedar) . AWS's official Cedar policy engine compiled to WebAssembly.
+- [`pino`](https://github.com/pinojs/pino) . Structured logging.
 
 Everything else uses Node.js built-ins: `node:http` for the server and reverse proxy, `node:fs` for file watching, custom code for Prometheus metrics serialization.
+
+---
 
 ## Development
 
@@ -396,6 +458,8 @@ npm run test:watch   # Watch mode
 npm run build        # Compile to dist/
 npm start            # Start the gateway
 ```
+
+---
 
 ## License
 
