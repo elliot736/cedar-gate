@@ -1,0 +1,39 @@
+services:
+  gateway:
+    build: .
+    ports:
+      - "8080:8080"
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - ./policies:/app/policies
+      - ./entities.json:/app/entities.json
+    environment:
+      - PORT=8080
+      - ADMIN_PORT=8081
+      - POLICIES_DIR=/app/policies
+      - ENTITIES_FILE=/app/entities.json
+      - LOG_LEVEL=info
+      - HOT_RELOAD=true
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend:
+    image: node:22-alpine
+    command: >
+      node -e "
+        const http = require('http');
+        const server = http.createServer((req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            service: 'backend',
+            path: req.url,
+            method: req.method,
+            requestId: req.headers['x-request-id'],
+            timestamp: new Date().toISOString()
+          }));
+        });
+        server.listen(3001, () => console.log('Backend listening on :3001'));
+      "
+    expose:
+      - "3001"
